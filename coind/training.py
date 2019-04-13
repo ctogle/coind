@@ -1,3 +1,4 @@
+import argparse
 import matplotlib.pyplot as plt
 import os
 import collections
@@ -63,8 +64,9 @@ class TickerDataset(Dataset):
 
 
     @classmethod
-    def splits(cls, *ticker_logs, window=3, stride=3, stream_window=600):
-        products = tickers.streamable(*ticker_logs, window=stream_window)
+    def splits(cls, *ticker_logs, window=3, stride=3, stream_window=600, products=None):
+        if products is None:
+            products = tickers.streamable(*ticker_logs, window=stream_window)
         df = tickers.df(*ticker_logs, products=products, window=stream_window)
         many = df.shape[0]
         assert many > 3 * (window + stride),\
@@ -78,7 +80,8 @@ class TickerDataset(Dataset):
                 cls(val_df, products, window, stride),
                 cls(test_df, products, window, stride))
 
-def plot_grad_flow(named_parameters):
+
+def plot_grad_flow(ax, named_parameters):
     '''Plots the gradients flowing through different layers in the net during training.
     Can be used for checking for possible gradient vanishing / exploding problems.
 
@@ -92,22 +95,25 @@ def plot_grad_flow(named_parameters):
             layers.append(n)
             ave_grads.append(p.grad.abs().mean())
             max_grads.append(p.grad.abs().max())
-    plt.bar(np.arange(len(max_grads)) + 0.5, max_grads, alpha=0.1, lw=1, color="c")
-    plt.bar(np.arange(len(max_grads)) + 0.5, ave_grads, alpha=0.1, lw=1, color="b")
-    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-    plt.xticks(np.arange(len(ave_grads)) + 0.5, layers, rotation="vertical")
-    plt.xlim(left=0, right=len(ave_grads))
-    plt.ylim(bottom = -0.001, top=max(max_grads)) # zoom in on the lower gradient regions
-    plt.xlabel("Layers")
-    plt.ylabel("average gradient")
-    plt.title("Gradient flow")
+    ax.bar(np.arange(len(max_grads)) + 0.5, max_grads, alpha=0.1, lw=1, color="c")
+    ax.bar(np.arange(len(max_grads)) + 0.5, ave_grads, alpha=0.1, lw=1, color="b")
+    #plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
+    #plt.xticks(np.arange(len(ave_grads)) + 0.5, layers, rotation="vertical")
+    ax.set_xticks(np.arange(len(ave_grads)) + 0.5)
+    ax.set_xticklabels(layers, rotation="vertical")
+    ax.set_xlim((     0, len(ave_grads)))
+    ax.set_ylim((-0.001, max(max_grads)))
+    ax.set_xlabel("Layers")
+    ax.set_ylabel("average gradient")
+    ax.set_title("Gradient flow")
 
 
-def train_epoch(model, dl, lr=0.01, momentum=0.9):
+def train_epoch(epoch, savedir, model, dl, lr=0.01, momentum=0.9):
     metrics = collections.defaultdict(list)
     criterion = nn.NLLLoss()
     #optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum)
     optimizer = optim.Adam(model.parameters(), lr=lr)
+    f, ax = plt.subplots(1, 1, figsize=(10, 4))
     with tqdm(total=len(dl)) as pbar:
         for j, (batch, targets) in enumerate(dl):
             metrics['positives'].append(targets.sum().item())
@@ -118,21 +124,23 @@ def train_epoch(model, dl, lr=0.01, momentum=0.9):
                 losses.append(criterion(prediction, target))
             loss = torch.sum(torch.stack(losses))
             loss.backward()
-            plot_grad_flow(model.named_parameters())
+            plot_grad_flow(ax, model.named_parameters())
             optimizer.step()
             metrics['loss'].append(loss.item())
             pbar.update(1)
             pbar.set_description('loss: {}'.format(loss.item()))
+    plt.savefig(os.path.join(savedir, f'grads.{epoch}.png'))
     return metrics
 
 
-def train(epochs, save_dir, ticker_logs,
-          window=6, stride=3, stream_window=600,
+def train(epochs, savedir, ticker_logs,
+          window=6, stride=3, stream_window=600, products=None,
           d_hidden=20, n_layers=1, batch_size=4, num_workers=4):
     train_set, val_set, test_set = TickerDataset.splits(*ticker_logs,
                                                         window=window,
                                                         stride=stride,
-                                                        stream_window=stream_window)
+                                                        stream_window=stream_window,
+                                                        products=products)
     dl_kws = dict(num_workers=num_workers,
                   batch_size=batch_size,
                   collate_fn=TickerDataset._collate)
@@ -143,15 +151,14 @@ def train(epochs, save_dir, ticker_logs,
     n_features = len(ticker_feature_keys) * n_products
     model = Oracle(n_features, d_hidden, n_layers, n_products)
     model.products = train_set.products
+    model_path = os.path.join(savedir, 'oracle.pt')
     train_losses = []
     val_losses = []
     accuracies = []
-    model_path = os.path.join(save_dir, 'oracle.pt')
-    os.makedirs(save_dir, exist_ok=True)
     val_metrics = validate(model, val_dl)
     val_losses.append(np.mean(val_metrics['loss']))
     for e in range(epochs):
-        train_metrics = train_epoch(model, train_dl)
+        train_metrics = train_epoch(e, savedir, model, train_dl)
         train_losses.extend(train_metrics['loss'])
         val_metrics = validate(model, val_dl)
         val_losses.append(np.mean(val_metrics['loss']))
@@ -160,3 +167,27 @@ def train(epochs, save_dir, ticker_logs,
     return model, train_losses, val_losses, accuracies
 
 
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Train predictive models')
+    parser.add_argument('savedir', help='Path to store training related files')
+    parser.add_argument('--inputs', nargs='+', default=[],
+                        help='One or more ticker logs to use for training')
+    parser.add_argument('--epochs', type=int, default=5,
+                        help='Number of training epochs')
+    parser.add_argument('--products', default='products.txt',
+                        help='Path to list of targeted products')
+    args = parser.parse_args()
+
+    with open(args.products, 'r') as f:
+        products = [l.strip() for l in f.readlines() if not l.startswith('#')]
+        products = [l for l in products if l]
+
+    model, train_losses, val_losses, accuracies =\
+        train(args.epochs, args.savedir, args.inputs, products=products)
+
+    f, ax = plt.subplots(1, 1, figsize=(10, 4))
+    for y in (train_losses, val_losses, accuracies):
+        y = np.array(y) / max(y)
+        x = np.linspace(0, args.epochs + 1, len(y))
+        ax.plot(x, y)
+    plt.savefig(os.path.join(args.savedir, 'plot.png'))

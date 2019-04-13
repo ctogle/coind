@@ -14,8 +14,12 @@ the resolution of the predictive model with poorly chosen products to target.
 
 ## Training Predictive Model
 
-`notebooks/train\_model.ipynb` demonstrates training and saving a predictive model.
-Training loss, validation loss, and validation accuracies are also shown.
+Train and validate predictive model using ticker data ("streams.*.log").
+Saves models and plots to $savedir throughout training.
+
+`python -m coind.training $savedir --inputs streams.*.log --products products.txt`
+
+`python -m coind.training --help` for more info
 
 
 ## Simulating Market Agent

@@ -1,3 +1,4 @@
+import argparse
 from datetime import datetime, timedelta
 from multiprocessing import Queue
 import collections
@@ -6,7 +7,6 @@ import numpy as np
 import json
 import cbpro
 import time
-import argparse
 
 
 batch_meta_keys = ('time', 'mass', 'purity', 'prices')
@@ -181,6 +181,5 @@ if __name__ == '__main__':
 
     with open(args.output, 'w') as f:
         for j, ticker in enumerate(stream_tickers_live(products=products)):
+            f.write(f'{ticker}\n')
             print(f'tickers: {j}', end='\r')
-            f.write(json.dumps(ticker, sort_keys=True))
-            f.write('\n')
