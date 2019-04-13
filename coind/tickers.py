@@ -168,13 +168,14 @@ class TickerClient(cbpro.WebsocketClient):
 
 if __name__ == '__main__':
     products = [
-        'BAT-USDC', 'BCH-BTC', 'BCH-EUR', 'BCH-GBP', 'BCH-USD', 'BTC-EUR', 'BTC-GBP',
-        'BTC-USD', 'BTC-USDC', 'CVC-USDC', 'DAI-USDC', 'DNT-USDC', 'EOS-BTC', 'EOS-EUR',
-        'EOS-USD', 'ETC-BTC', 'ETC-EUR', 'ETC-GBP', 'ETC-USD', 'ETH-BTC', 'ETH-EUR',
-        'ETH-GBP', 'ETH-USD', 'ETH-USDC', 'GNT-USDC', 'LOOM-USDC', 'LTC-BTC', 'LTC-EUR',
-        'LTC-GBP', 'LTC-USD', 'MANA-USDC', 'MKR-BTC', 'MKR-USDC', 'REP-BTC', 'REP-EUR',
-        'REP-USD', 'XLM-BTC', 'XLM-EUR', 'XLM-USD', 'XRP-BTC', 'XRP-EUR', 'XRP-USD',
-        'ZEC-USDC', 'ZRX-BTC', 'ZRX-EUR', 'ZRX-USD',
+        #'BAT-USDC', 'BCH-BTC', 'BCH-EUR', 'BCH-GBP', 'BCH-USD', 'BTC-EUR', 'BTC-GBP',
+        #'BTC-USD', 'BTC-USDC', 'CVC-USDC', 'DAI-USDC', 'DNT-USDC', 'EOS-BTC', 'EOS-EUR',
+        #'EOS-USD', 'ETC-BTC', 'ETC-EUR', 'ETC-GBP', 'ETC-USD', 'ETH-BTC', 'ETH-EUR',
+        #'ETH-GBP', 'ETH-USD', 'ETH-USDC', 'GNT-USDC', 'LOOM-USDC', 'LTC-BTC', 'LTC-EUR',
+        #'LTC-GBP', 'LTC-USD', 'MANA-USDC', 'MKR-BTC', 'MKR-USDC', 'REP-BTC', 'REP-EUR',
+        #'REP-USD', 'XLM-BTC', 'XLM-EUR', 'XLM-USD', 'XRP-BTC', 'XRP-EUR', 'XRP-USD',
+        #'ZEC-USDC', 'ZRX-BTC', 'ZRX-EUR', 'ZRX-USD',
+        'BCH-USD', 'BTC-USD', 'ETH-USD', 'EOS-USD',
     ]
     with open('./stream.log', 'w') as f:
         for j, ticker in enumerate(stream_tickers_live(products=products)):

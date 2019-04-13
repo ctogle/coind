@@ -29,6 +29,7 @@ class InferenceStream:
 
 
     @staticmethod
+    @torch.no_grad()
     def _collate(snapshot):
         frames = []
         for i, snap in enumerate(snapshot.itertuples(index=False)):

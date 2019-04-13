@@ -1,19 +1,10 @@
-from datetime import datetime, timedelta
-from multiprocessing import Queue
-import collections
-from torch.utils.data import Dataset, DataLoader
-import torch
-import torch.nn as nn
-import torch.optim as optim
 import numpy as np
-import pandas as pd
-import collections
-from tqdm import tqdm
-import matplotlib.pyplot as plt
+import torch
+from torch.utils.data import Dataset, DataLoader
 import coind.tickers as tickers
 
 
-class TickerDataset(Dataset):
+class ___TickerDataset(Dataset):
 
     def __init__(self, df, products, window=6, stride=6):
         self.df = df
