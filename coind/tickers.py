@@ -6,6 +6,7 @@ import numpy as np
 import json
 import cbpro
 import time
+import argparse
 
 
 batch_meta_keys = ('time', 'mass', 'purity', 'prices')
@@ -167,17 +168,18 @@ class TickerClient(cbpro.WebsocketClient):
 
 
 if __name__ == '__main__':
-    products = [
-        #'BAT-USDC', 'BCH-BTC', 'BCH-EUR', 'BCH-GBP', 'BCH-USD', 'BTC-EUR', 'BTC-GBP',
-        #'BTC-USD', 'BTC-USDC', 'CVC-USDC', 'DAI-USDC', 'DNT-USDC', 'EOS-BTC', 'EOS-EUR',
-        #'EOS-USD', 'ETC-BTC', 'ETC-EUR', 'ETC-GBP', 'ETC-USD', 'ETH-BTC', 'ETH-EUR',
-        #'ETH-GBP', 'ETH-USD', 'ETH-USDC', 'GNT-USDC', 'LOOM-USDC', 'LTC-BTC', 'LTC-EUR',
-        #'LTC-GBP', 'LTC-USD', 'MANA-USDC', 'MKR-BTC', 'MKR-USDC', 'REP-BTC', 'REP-EUR',
-        #'REP-USD', 'XLM-BTC', 'XLM-EUR', 'XLM-USD', 'XRP-BTC', 'XRP-EUR', 'XRP-USD',
-        #'ZEC-USDC', 'ZRX-BTC', 'ZRX-EUR', 'ZRX-USD',
-        'BCH-USD', 'BTC-USD', 'ETH-USD', 'EOS-USD',
-    ]
-    with open('./stream.log', 'w') as f:
+    parser = argparse.ArgumentParser(description='Utility for aggregating ticker data')
+    parser.add_argument('--output', default='stream.log',
+                        help='Path to store ticker data')
+    parser.add_argument('--products', default='products.txt',
+                        help='Path to list of targeted products')
+    args = parser.parse_args()
+
+    with open(args.products, 'r') as f:
+        products = [l.strip() for l in f.readlines() if not l.startswith('#')]
+        products = [l for l in products if l]
+
+    with open(args.output, 'w') as f:
         for j, ticker in enumerate(stream_tickers_live(products=products)):
             print(f'tickers: {j}', end='\r')
             f.write(json.dumps(ticker, sort_keys=True))
