@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 
 import coind.tickers as tickers
 from .tickers import ticker_feature_keys
@@ -16,6 +16,23 @@ from .validation import validate
 
 
 class TickerDataset(Dataset):
+
+    def __inventory(self):
+        classes_by_product = collections.defaultdict(list)
+        sampler = ContiguousSampler(self)
+        observed = set()
+        for i in sampler:
+            inputs, targets = self[i]
+            for product, target in zip(self.products, targets):
+                classes_by_product[product].append(target)
+                observed.add(target)
+        msg = []
+        for product, classes in classes_by_product.items():
+            msg.append(f'\nFor product: {product}')
+            for target in sorted(observed):
+                msg.append(f'{target}: {classes.count(target)}')
+        return '\n'.join(msg)
+
 
     def __init__(self, df, products, window=6, stride=6):
         self.df = df
@@ -32,12 +49,17 @@ class TickerDataset(Dataset):
             if i < self.window:
                 fs = snap.features
                 frames.append((fs - fs.mean()) / fs.std())
-            else:
+            if i >= self.window - 1:
                 for j, product in enumerate(self.products):
                     prices[j].append(snap.prices[product])
         frames, prices = np.array(frames), np.array(prices)
-        price_grads = np.gradient(prices, axis=1)
-        bull = 1 * (price_grads.min(axis=1) > 0)
+
+        bull = 1 * (prices[:, -1] > prices[:, 0])
+
+        #price_grads = np.gradient(prices, axis=1)
+        #bull = 1 * (price_grads.mean(axis=1) > 0)
+        #bull = 1 * (price_grads.min(axis=1) > 0)
+
         assert len(frames) == self.window
         assert len(bull) == len(self.products)
         return frames, bull
@@ -71,14 +93,62 @@ class TickerDataset(Dataset):
         many = df.shape[0]
         assert many > 3 * (window + stride),\
                f'insufficient data... (only {many} samples)'
-        tiny = int(0.2 * many)
+        tiny = int(0.1 * many)
         test_df = df.iloc[-tiny:]
         val_df = df.iloc[-tiny * 2:-tiny]
         index = np.random.RandomState(0).permutation(np.arange(many - 2 * tiny))
         train_df = df.iloc[index]
+        print(train_df.shape, val_df.shape, test_df.shape)
         return (cls(train_df, products, window, stride),
                 cls(val_df, products, window, stride),
                 cls(test_df, products, window, stride))
+
+
+class ContiguousSampler(Sampler):
+
+    def __init__(self, dataset, resample=False):
+        self.ids = []
+        self.bins = [[[] for x in range(2)] for product in dataset.products]
+        print(len(dataset), dataset.df.shape)
+        edgecount = 0
+        for x in np.arange(len(dataset)):
+            snapshot = dataset.df[x:x + dataset.window + dataset.stride]
+            if not snapshot.edge.values.any():
+                self.ids.append(x)
+                inputs, targets = dataset[x]
+                for y, target in enumerate(targets):
+                    self.bins[y][target].append(x)
+            else:
+                edgecount += 1
+        self.n_samples = len(self.ids)
+        self._iteration = -1
+        print(f'edges: {edgecount}')
+        for product, bins in zip(dataset.products, self.bins):
+            print(f'Product: {product}')
+            for cls in range(len(bins)):
+                print(f'cls: {cls}, cnt: {len(bins[cls])}')
+        self.resample = resample
+        self.btc_index = dataset.products.index('BTC-USD')
+
+
+    def __iter__(self):
+        self._iteration += 1
+        rng = np.random.RandomState(self._iteration)
+        if self.resample:
+            n_samples_per_class = 10000
+            bins = self.bins[self.btc_index]
+            index = []
+            for target_bin in bins:
+                chunk = rng.permutation(target_bin)
+                chunk = chunk[:min(len(chunk), n_samples_per_class)]
+                index.extend(chunk)
+        else:
+            index = self.ids
+        return iter(rng.permutation(index))
+
+
+    def __len__(self):
+        return self.n_samples
 
 
 def plot_grad_flow(ax, named_parameters):
@@ -97,8 +167,6 @@ def plot_grad_flow(ax, named_parameters):
             max_grads.append(p.grad.abs().max())
     ax.bar(np.arange(len(max_grads)) + 0.5, max_grads, alpha=0.1, lw=1, color="c")
     ax.bar(np.arange(len(max_grads)) + 0.5, ave_grads, alpha=0.1, lw=1, color="b")
-    #plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-    #plt.xticks(np.arange(len(ave_grads)) + 0.5, layers, rotation="vertical")
     ax.set_xticks(np.arange(len(ave_grads)) + 0.5)
     ax.set_xticklabels(layers, rotation="vertical")
     ax.set_xlim((     0, len(ave_grads)))
@@ -108,7 +176,8 @@ def plot_grad_flow(ax, named_parameters):
     ax.set_title("Gradient flow")
 
 
-def train_epoch(epoch, savedir, model, dl, lr=0.01, momentum=0.9):
+def train_epoch(epoch, savedir, model, dl, lr=0.001, momentum=0.9):
+    model.train()
     metrics = collections.defaultdict(list)
     criterion = nn.NLLLoss()
     #optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum)
@@ -128,28 +197,36 @@ def train_epoch(epoch, savedir, model, dl, lr=0.01, momentum=0.9):
             optimizer.step()
             metrics['loss'].append(loss.item())
             pbar.update(1)
-            pbar.set_description('loss: {}'.format(loss.item()))
+            desc = f'loss: {loss.item():.6f}'
+            pbar.set_description(desc)
     plt.savefig(os.path.join(savedir, f'grads.{epoch}.png'))
     return metrics
 
 
 def train(epochs, savedir, ticker_logs,
-          window=6, stride=3, stream_window=600, products=None,
+          window=3, stride=3, stream_window=300, products=None,
           d_hidden=20, n_layers=1, batch_size=4, num_workers=4):
     train_set, val_set, test_set = TickerDataset.splits(*ticker_logs,
                                                         window=window,
                                                         stride=stride,
                                                         stream_window=stream_window,
                                                         products=products)
+    #print('training data:', train_set.inventory())
+    #print('validation data:', train_set.inventory())
+    #print('testing data:', test_set.inventory())
+    train_sampler = ContiguousSampler(train_set, resample=True)
+    val_sampler = ContiguousSampler(val_set)
+    test_sampler = ContiguousSampler(test_set)
     dl_kws = dict(num_workers=num_workers,
                   batch_size=batch_size,
                   collate_fn=TickerDataset._collate)
-    train_dl = DataLoader(train_set, **dl_kws)
-    val_dl = DataLoader(val_set, **dl_kws)
-    test_dl = DataLoader(test_set, **dl_kws)
+    train_dl = DataLoader(train_set, sampler=train_sampler, **dl_kws)
+    val_dl = DataLoader(val_set, sampler=val_sampler, **dl_kws)
+    test_dl = DataLoader(test_set, sampler=test_sampler, **dl_kws)
     n_products = len(train_set.products)
     n_features = len(ticker_feature_keys) * n_products
-    model = Oracle(n_features, d_hidden, n_layers, n_products)
+    n_classes = 2
+    model = Oracle(n_features, d_hidden, n_layers, n_products, n_classes)
     model.products = train_set.products
     model_path = os.path.join(savedir, 'oracle.pt')
     train_losses = []
@@ -162,32 +239,54 @@ def train(epochs, savedir, ticker_logs,
         train_losses.extend(train_metrics['loss'])
         val_metrics = validate(model, val_dl)
         val_losses.append(np.mean(val_metrics['loss']))
-        accuracies.append(np.mean(val_metrics['accuracy']))
+        accuracies.append(val_metrics['mean_accuracy'])
         torch.save(model, model_path)
     return model, train_losses, val_losses, accuracies
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train predictive models')
-    parser.add_argument('savedir', help='Path to store training related files')
+    parser.add_argument('--savedir', type=str, default='./',
+                        help='Path to store training related files')
     parser.add_argument('--inputs', nargs='+', default=[],
                         help='One or more ticker logs to use for training')
     parser.add_argument('--epochs', type=int, default=5,
                         help='Number of training epochs')
-    parser.add_argument('--products', default='products.txt',
+    parser.add_argument('--products', default=None,
                         help='Path to list of targeted products')
+    parser.add_argument('--window', type=int, default=9,
+                        help='Number of input timesteps for predictive model')
+    parser.add_argument('--stride', type=int, default=9,
+                        help='Number of timesteps being predicted')
+    parser.add_argument('--stream_window', type=int, default=900,
+                        help='Number of seconds per averaged timestep')
+    parser.add_argument('--d_hidden', type=int, default=100,
+                        help='LSTM hidden layer dimension')
+    parser.add_argument('--n_layers', type=int, default=1,
+                        help='Number of LSTMS to stack')
+    parser.add_argument('--batch_size', type=int, default=4,
+                        help='Number of samples per batch')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='Number of worker processes for loading data')
     args = parser.parse_args()
 
-    with open(args.products, 'r') as f:
-        products = [l.strip() for l in f.readlines() if not l.startswith('#')]
-        products = [l for l in products if l]
+    if args.products is None:
+        products = None
+    else:
+        with open(args.products, 'r') as f:
+            products = [l.strip() for l in f.readlines() if not l.startswith('#')]
+            products = [l for l in products if l]
 
     model, train_losses, val_losses, accuracies =\
-        train(args.epochs, args.savedir, args.inputs, products=products)
+        train(args.epochs, args.savedir, args.inputs,
+              window=args.window, stride=args.stride,
+              stream_window=args.stream_window,
+              products=products, d_hidden=args.d_hidden, n_layers=args.n_layers,
+              batch_size=args.batch_size, num_workers=args.num_workers)
 
     f, ax = plt.subplots(1, 1, figsize=(10, 4))
     for y in (train_losses, val_losses, accuracies):
         y = np.array(y) / max(y)
         x = np.linspace(0, args.epochs + 1, len(y))
         ax.plot(x, y)
-    plt.savefig(os.path.join(args.savedir, 'plot.png'))
+    plt.savefig(os.path.join(args.savedir, 'loss_accuracy.png'))

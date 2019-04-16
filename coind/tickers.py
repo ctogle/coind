@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime, timedelta
 from multiprocessing import Queue
+#from recordclass import recordclass
 import collections
 import pandas as pd
 import numpy as np
@@ -9,7 +10,7 @@ import cbpro
 import time
 
 
-batch_meta_keys = ('time', 'mass', 'purity', 'prices')
+batch_meta_keys = ('time', 'mass', 'purity', 'prices', 'edge')
 batch_sample = collections.namedtuple('Sample', batch_meta_keys + ('features', ))
 
 
@@ -19,9 +20,6 @@ def df(*paths, products=None, window=600):
         stream = stream_tickers(path, products)
         batches = stream_batches(stream, products, window)
         df = pd.DataFrame.from_records(batches, columns=batch_sample._fields)
-        df.log_edge = False
-        df.iloc[0].log_edge = True
-        df.iloc[-1].log_edge = True
         dfs.append(df)
     df = pd.concat(dfs)
     return df
@@ -32,11 +30,14 @@ def stream_batches(stream, products=None, window=600):
     zero = lambda : np.zeros(len(ticker_feature_keys))
     _cached = collections.defaultdict(zero)
     for time, batch in stream_buffer(stream, window):
-        batch_products = set(s.product_id for s in batch)
-        mass = len(batch)
-        purity = (len(batch_products) / len(products))
-        prices, features = collate_ticker_samples(batch, products)
-        yield batch_sample(time, mass, purity, prices, features)
+        if batch:
+            batch_products = set(s.product_id for s in batch)
+            mass = len(batch)
+            purity = (len(batch_products) / len(products))
+            prices, features = collate_ticker_samples(batch, products)
+            yield batch_sample(time, mass, purity, prices, False, features)
+        else:
+            yield batch_sample(time, 0.0, 0.0, None, True, None)
 
 
 def streamable(*paths, products=None, window=600):
@@ -54,6 +55,7 @@ def streamable(*paths, products=None, window=600):
             departure_times = [dt.total_seconds() for dt in departure_times]
             if max(departure_times) < window:
                 streamable.append(ticker)
+    assert streamable, 'found no streamable products!'
     return streamable
 
 
@@ -84,7 +86,8 @@ def stream_buffer(stream, window):
     checkpoint = start + timedelta(seconds=window)
     for ticker in stream:
         if ticker.time > checkpoint:
-            assert buffer
+            # TODO: do raise during inference and to loop restarting?
+            #assert buffer
             yield checkpoint, buffer
             buffer = []
             checkpoint += timedelta(seconds=window)
@@ -129,12 +132,14 @@ def stream_tickers_log(path, products=None):
             f.write(f'{json.dumps(ticker)}\n')
 
 
-ticker_meta_keys = ('product_id', 'sequence', 'time', 'trade_id')
+ticker_meta_keys = ('product_id', 'time')
 ticker_sample = collections.namedtuple('TickerSample',
                                        ticker_meta_keys + ('features', ))
 #ticker_feature_keys = ('best_ask', 'best_bid', 'high_24h', 'low_24h',
-ticker_feature_keys = ('high_24h', 'low_24h',
-                       'open_24h', 'price', 'volume_24h', 'volume_30d')
+#ticker_feature_keys = ('high_24h', 'low_24h',
+#                       'open_24h', 'price', 'volume_24h', 'volume_30d')
+ticker_feature_keys = ('high_24h', 'low_24h', 'price', 'volume_24h')
+#ticker_feature_keys = ('price', )
 ticker_price_index = ticker_feature_keys.index('price')
 ticker_date_format = "%Y-%m-%dT%H:%M:%S.%fZ"
 
@@ -168,7 +173,8 @@ class TickerClient(cbpro.WebsocketClient):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Utility for aggregating ticker data')
+    parser = argparse.ArgumentParser(
+		description='Utility for aggregating ticker data')
     parser.add_argument('--output', default='stream.log',
                         help='Path to store ticker data')
     parser.add_argument('--products', default='products.txt',
