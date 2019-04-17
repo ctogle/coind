@@ -17,7 +17,7 @@ def validate(model, dl):
             for i, (prediction, target) in enumerate(zip(hypothesis, targets)):
                 losses.append(criterion(prediction, target))
                 prediction = torch.argmax(prediction, dim=-1)
-                correct.extend([(1 if p == t else 0) for p, t in zip(prediction, target)])
+                correct.extend([int(p == t) for p, t in zip(prediction, target)])
             loss = torch.sum(torch.stack(losses))
             metrics['loss'].append(loss.item())
             pbar.update(1)
@@ -25,12 +25,12 @@ def validate(model, dl):
             pbar.set_description(desc)
         else:
             accuracies = []
-            print(model.products)
             for j, product in enumerate(model.products):
                 accuracy = correct[j::model.n_products]
                 accuracy = 100 * sum(accuracy) / len(accuracy)
                 metrics[f'{product}_accuracy'] = accuracy
                 accuracies.append(accuracy)
+                print(f'Product: {product}: {accuracy}%')
             accuracy = sum(accuracies) / len(accuracies)
             metrics[f'mean_accuracy'] = accuracy
             desc = f'loss: {loss.item():.6f} | acc: {accuracy:.2f}%'

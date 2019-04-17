@@ -17,23 +17,6 @@ from .validation import validate
 
 class TickerDataset(Dataset):
 
-    def __inventory(self):
-        classes_by_product = collections.defaultdict(list)
-        sampler = ContiguousSampler(self)
-        observed = set()
-        for i in sampler:
-            inputs, targets = self[i]
-            for product, target in zip(self.products, targets):
-                classes_by_product[product].append(target)
-                observed.add(target)
-        msg = []
-        for product, classes in classes_by_product.items():
-            msg.append(f'\nFor product: {product}')
-            for target in sorted(observed):
-                msg.append(f'{target}: {classes.count(target)}')
-        return '\n'.join(msg)
-
-
     def __init__(self, df, products, window=6, stride=6):
         self.df = df
         self.products = products
@@ -54,10 +37,10 @@ class TickerDataset(Dataset):
                     prices[j].append(snap.prices[product])
         frames, prices = np.array(frames), np.array(prices)
 
-        bull = 1 * (prices[:, -1] > prices[:, 0])
+        #bull = 1 * (prices[:, -1] > prices[:, 0])
 
-        #price_grads = np.gradient(prices, axis=1)
-        #bull = 1 * (price_grads.mean(axis=1) > 0)
+        price_grads = np.gradient(prices, axis=1)
+        bull = 1 * (price_grads.mean(axis=1) > 0)
         #bull = 1 * (price_grads.min(axis=1) > 0)
 
         assert len(frames) == self.window
@@ -93,7 +76,7 @@ class TickerDataset(Dataset):
         many = df.shape[0]
         assert many > 3 * (window + stride),\
                f'insufficient data... (only {many} samples)'
-        tiny = int(0.1 * many)
+        tiny = int(0.02 * many)
         test_df = df.iloc[-tiny:]
         val_df = df.iloc[-tiny * 2:-tiny]
         index = np.random.RandomState(0).permutation(np.arange(many - 2 * tiny))
@@ -176,7 +159,7 @@ def plot_grad_flow(ax, named_parameters):
     ax.set_title("Gradient flow")
 
 
-def train_epoch(epoch, savedir, model, dl, lr=0.001, momentum=0.9):
+def train_epoch(epoch, savedir, model, dl, lr=0.1, momentum=0.9):
     model.train()
     metrics = collections.defaultdict(list)
     criterion = nn.NLLLoss()
@@ -203,6 +186,22 @@ def train_epoch(epoch, savedir, model, dl, lr=0.001, momentum=0.9):
     return metrics
 
 
+class DeviceWrap:
+
+    def __init__(self, dl, device):
+        self.dl = dl
+        self.device = device
+
+
+    def __iter__(self):
+        for batch, targets in self.dl:
+            yield batch.to(self.device), targets.to(self.device)
+
+
+    def __len__(self):
+        return len(self.dl)
+
+
 def train(epochs, savedir, ticker_logs,
           window=3, stride=3, stream_window=300, products=None,
           d_hidden=20, n_layers=1, batch_size=4, num_workers=4):
@@ -211,9 +210,6 @@ def train(epochs, savedir, ticker_logs,
                                                         stride=stride,
                                                         stream_window=stream_window,
                                                         products=products)
-    #print('training data:', train_set.inventory())
-    #print('validation data:', train_set.inventory())
-    #print('testing data:', test_set.inventory())
     train_sampler = ContiguousSampler(train_set, resample=True)
     val_sampler = ContiguousSampler(val_set)
     test_sampler = ContiguousSampler(test_set)
@@ -223,10 +219,15 @@ def train(epochs, savedir, ticker_logs,
     train_dl = DataLoader(train_set, sampler=train_sampler, **dl_kws)
     val_dl = DataLoader(val_set, sampler=val_sampler, **dl_kws)
     test_dl = DataLoader(test_set, sampler=test_sampler, **dl_kws)
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    train_dl = DeviceWrap(train_dl, device)
+    val_dl = DeviceWrap(val_dl, device)
+    test_dl = DeviceWrap(test_dl, device)
     n_products = len(train_set.products)
     n_features = len(ticker_feature_keys) * n_products
     n_classes = 2
     model = Oracle(n_features, d_hidden, n_layers, n_products, n_classes)
+    model.to(device)
     model.products = train_set.products
     model_path = os.path.join(savedir, 'oracle.pt')
     train_losses = []
