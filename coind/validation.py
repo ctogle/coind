@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch
 
 
-def validate(model, dl):
+def validate(model, dl, products):
     model.eval()
     metrics = collections.defaultdict(list)
     criterion = nn.NLLLoss()
@@ -25,8 +25,8 @@ def validate(model, dl):
             pbar.set_description(desc)
         else:
             accuracies = []
-            for j, product in enumerate(model.products):
-                accuracy = correct[j::model.n_products]
+            for j, product in enumerate(products):
+                accuracy = correct[j::len(products)]
                 accuracy = 100 * sum(accuracy) / len(accuracy)
                 metrics[f'{product}_accuracy'] = accuracy
                 accuracies.append(accuracy)

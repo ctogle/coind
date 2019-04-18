@@ -9,4 +9,4 @@ if __name__ == '__main__':
         description='Simulate Crytocurrency Trading',
         author='Curtis Ogle',
         author_email='curtis.t.ogle@gmail.com',
-        packages=['coind'])
+        packages=['coind', 'coind.data'])

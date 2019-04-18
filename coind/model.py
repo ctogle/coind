@@ -3,17 +3,11 @@ import torch.nn as nn
 
 class Oracle(nn.Module):
 
-
-    #def _hidden(self, x):
-    #    self.n_layers, x.shape[1], self.d_hidden
-
-
     def __init__(self, n_features, d_hidden, n_layers, n_products, n_classes):
         super().__init__()
         self.rnn = nn.LSTM(n_features, d_hidden, n_layers)
         self.decoder = nn.Sequential(
-            nn.Linear(d_hidden, n_products * n_classes),
-            #nn.Softshrink(0.1),
+            nn.Linear(d_hidden, n_products * n_classes, bias=False),
         )
         self.soft = nn.LogSoftmax(dim=-1)
         self.n_features = n_features

@@ -7,131 +7,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, Sampler
 
-import coind.tickers as tickers
-from .tickers import ticker_feature_keys
+from .data import dataloaders
 from .model import Oracle
 from .validation import validate
-
-
-class TickerDataset(Dataset):
-
-    def __init__(self, df, products, window=6, stride=6):
-        self.df = df
-        self.products = products
-        self.window = window
-        self.stride = stride
-
-
-    def __getitem__(self, index):
-        snapshot = self.df[index:index + self.window + self.stride]
-        frames = []
-        prices = [[] for product in self.products]
-        for i, snap in enumerate(snapshot.itertuples(index=False)):
-            if i < self.window:
-                fs = snap.features
-                frames.append((fs - fs.mean()) / fs.std())
-            if i >= self.window - 1:
-                for j, product in enumerate(self.products):
-                    prices[j].append(snap.prices[product])
-        frames, prices = np.array(frames), np.array(prices)
-
-        #bull = 1 * (prices[:, -1] > prices[:, 0])
-
-        price_grads = np.gradient(prices, axis=1)
-        bull = 1 * (price_grads.mean(axis=1) > 0)
-        #bull = 1 * (price_grads.min(axis=1) > 0)
-
-        assert len(frames) == self.window
-        assert len(bull) == len(self.products)
-        return frames, bull
-
-
-    def __len__(self):
-        return self.df.shape[0] - self.window - self.stride
-
-
-    @staticmethod
-    @torch.no_grad()
-    def _collate(samples):
-        frames, bulls = zip(*samples)
-        batched_frames = torch.FloatTensor(frames).transpose(0, 1)
-        batched_bulls = torch.LongTensor(bulls).transpose(0, 1)
-        return batched_frames, batched_bulls
-
-
-    @classmethod
-    def from_log(cls, ticker_log, window=3, stride=3, stream_window=600):
-        products = tickers.streamable(ticker_log, window=stream_window)
-        df = tickers.df(ticker_log, products, window=stream_window)
-        return cls(df, products, window, stride)
-
-
-    @classmethod
-    def splits(cls, *ticker_logs, window=3, stride=3, stream_window=600, products=None):
-        if products is None:
-            products = tickers.streamable(*ticker_logs, window=stream_window)
-        df = tickers.df(*ticker_logs, products=products, window=stream_window)
-        many = df.shape[0]
-        assert many > 3 * (window + stride),\
-               f'insufficient data... (only {many} samples)'
-        tiny = int(0.02 * many)
-        test_df = df.iloc[-tiny:]
-        val_df = df.iloc[-tiny * 2:-tiny]
-        index = np.random.RandomState(0).permutation(np.arange(many - 2 * tiny))
-        train_df = df.iloc[index]
-        print(train_df.shape, val_df.shape, test_df.shape)
-        return (cls(train_df, products, window, stride),
-                cls(val_df, products, window, stride),
-                cls(test_df, products, window, stride))
-
-
-class ContiguousSampler(Sampler):
-
-    def __init__(self, dataset, resample=False):
-        self.ids = []
-        self.bins = [[[] for x in range(2)] for product in dataset.products]
-        print(len(dataset), dataset.df.shape)
-        edgecount = 0
-        for x in np.arange(len(dataset)):
-            snapshot = dataset.df[x:x + dataset.window + dataset.stride]
-            if not snapshot.edge.values.any():
-                self.ids.append(x)
-                inputs, targets = dataset[x]
-                for y, target in enumerate(targets):
-                    self.bins[y][target].append(x)
-            else:
-                edgecount += 1
-        self.n_samples = len(self.ids)
-        self._iteration = -1
-        print(f'edges: {edgecount}')
-        for product, bins in zip(dataset.products, self.bins):
-            print(f'Product: {product}')
-            for cls in range(len(bins)):
-                print(f'cls: {cls}, cnt: {len(bins[cls])}')
-        self.resample = resample
-        self.btc_index = dataset.products.index('BTC-USD')
-
-
-    def __iter__(self):
-        self._iteration += 1
-        rng = np.random.RandomState(self._iteration)
-        if self.resample:
-            n_samples_per_class = 10000
-            bins = self.bins[self.btc_index]
-            index = []
-            for target_bin in bins:
-                chunk = rng.permutation(target_bin)
-                chunk = chunk[:min(len(chunk), n_samples_per_class)]
-                index.extend(chunk)
-        else:
-            index = self.ids
-        return iter(rng.permutation(index))
-
-
-    def __len__(self):
-        return self.n_samples
 
 
 def plot_grad_flow(ax, named_parameters):
@@ -159,12 +38,10 @@ def plot_grad_flow(ax, named_parameters):
     ax.set_title("Gradient flow")
 
 
-def train_epoch(epoch, savedir, model, dl, lr=0.1, momentum=0.9):
+def train_epoch(epoch, savedir, model, dl, optimizer):
     model.train()
     metrics = collections.defaultdict(list)
     criterion = nn.NLLLoss()
-    #optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
     f, ax = plt.subplots(1, 1, figsize=(10, 4))
     with tqdm(total=len(dl)) as pbar:
         for j, (batch, targets) in enumerate(dl):
@@ -186,49 +63,22 @@ def train_epoch(epoch, savedir, model, dl, lr=0.1, momentum=0.9):
     return metrics
 
 
-class DeviceWrap:
-
-    def __init__(self, dl, device):
-        self.dl = dl
-        self.device = device
-
-
-    def __iter__(self):
-        for batch, targets in self.dl:
-            yield batch.to(self.device), targets.to(self.device)
-
-
-    def __len__(self):
-        return len(self.dl)
-
-
 def train(epochs, savedir, ticker_logs,
           window=3, stride=3, stream_window=300, products=None,
           d_hidden=20, n_layers=1, batch_size=4, num_workers=4):
-    train_set, val_set, test_set = TickerDataset.splits(*ticker_logs,
-                                                        window=window,
-                                                        stride=stride,
-                                                        stream_window=stream_window,
-                                                        products=products)
-    train_sampler = ContiguousSampler(train_set, resample=True)
-    val_sampler = ContiguousSampler(val_set)
-    test_sampler = ContiguousSampler(test_set)
-    dl_kws = dict(num_workers=num_workers,
-                  batch_size=batch_size,
-                  collate_fn=TickerDataset._collate)
-    train_dl = DataLoader(train_set, sampler=train_sampler, **dl_kws)
-    val_dl = DataLoader(val_set, sampler=val_sampler, **dl_kws)
-    test_dl = DataLoader(test_set, sampler=test_sampler, **dl_kws)
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    train_dl = DeviceWrap(train_dl, device)
-    val_dl = DeviceWrap(val_dl, device)
-    test_dl = DeviceWrap(test_dl, device)
-    n_products = len(train_set.products)
-    n_features = len(ticker_feature_keys) * n_products
+
+    feature_config = dict(window=window, stride=stride,
+        stream_window=stream_window, products=products)
+
+    products, n_features_per_product, train_dl, val_dl, test_dl =\
+        dataloaders(*ticker_logs, **feature_config)
+
+    n_products = len(products)
+    n_features = n_features_per_product * n_products
     n_classes = 2
     model = Oracle(n_features, d_hidden, n_layers, n_products, n_classes)
-    model.to(device)
-    model.products = train_set.products
+    model.to(train_dl.device)
+    model.products = products
     model_path = os.path.join(savedir, 'oracle.pt')
     train_losses = []
     val_losses = []
